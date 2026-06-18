@@ -1,0 +1,1535 @@
+openapi: 3.0.3
+info:
+  title: EventSpin API
+  description: |
+    API para la plataforma EventSpin de ruletas de premios. Permite gestionar eventos,
+    colecciones, ítems, spins, canjes y uploads de imágenes.
+
+    **Autenticación**: La mayoría de los endpoints requieren un JWT Bearer token en el
+    header `Authorization: Bearer <token>`. Los tokens se obtienen mediante `/auth/login`.
+
+    **Rate limiting**:
+    - Auth endpoints: 10 req/min
+    - Spin endpoint: 60 req/min
+    - Resto: 120 req/min
+  version: 1.0.0
+  contact:
+    email: guidogauna9@gmail.com
+
+servers:
+  - url: /api/v1
+    description: API v1
+
+tags:
+  - name: Auth
+    description: Registro, login y gestión de sesiones
+  - name: Events
+    description: CRUD de eventos de ruleta
+  - name: Spins
+    description: Ejecución de spins del juego
+  - name: Stats
+    description: Estadísticas y dashboard en tiempo real
+  - name: Collections
+    description: Colecciones de ítems dentro de un evento
+  - name: Items
+    description: Ítems/premios dentro de una colección
+  - name: Redemptions
+    description: Consulta y canje de códigos ganadores
+  - name: Uploads
+    description: Subida de imágenes a Cloudinary
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Unauthorized
+
+    Theme:
+      type: object
+      properties:
+        primaryColor:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          default: '#C0392B'
+        secondaryColor:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          default: '#D4AC0D'
+        backgroundColor:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          default: '#1a1a2e'
+        logoURL:
+          type: string
+          format: uri
+        backgroundURL:
+          type: string
+          format: uri
+        winAnimation:
+          type: string
+          enum: [confetti, fireworks, stars]
+
+    PlayerDataField:
+      type: object
+      required: [key, label, type, required]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+          enum: [text, email, number]
+        required:
+          type: boolean
+
+    GameConfig:
+      type: object
+      properties:
+        winnerInterval:
+          type: integer
+          minimum: 1
+          default: 5
+          description: Cada cuántos spins hay un ganador
+        spinDurationMs:
+          type: integer
+          default: 2000
+        codePrefix:
+          type: string
+          minLength: 1
+          maxLength: 10
+          default: WIN
+        codeExpiryMinutes:
+          type: integer
+          minimum: 1
+          default: 30
+        requirePlayerData:
+          type: boolean
+          default: false
+        playerDataFields:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlayerDataField'
+        maxSpinsPerSession:
+          type: integer
+          minimum: 0
+          default: 0
+          description: 0 significa ilimitado
+
+    Copy:
+      type: object
+      properties:
+        language:
+          type: string
+          enum: [es, en, pt]
+          default: es
+        winMessage:
+          type: string
+          description: Soporta placeholder [ITEM]
+        loseMessage:
+          type: string
+        ctaPlay:
+          type: string
+          default: GIRAR
+        ctaPlayAgain:
+          type: string
+          default: JUGAR DE NUEVO
+
+    EventStats:
+      type: object
+      properties:
+        totalSpins:
+          type: integer
+        totalWinners:
+          type: integer
+        totalRedemptions:
+          type: integer
+
+    Event:
+      type: object
+      required: [slug, name, startsAt, endsAt]
+      properties:
+        _id:
+          type: string
+          description: MongoDB ObjectId
+        slug:
+          type: string
+          pattern: '^[a-z0-9-]+$'
+          description: Identificador URL único por organización
+        name:
+          type: string
+          minLength: 2
+        description:
+          type: string
+        status:
+          type: string
+          enum: [draft, active, paused, ended]
+        theme:
+          $ref: '#/components/schemas/Theme'
+        gameConfig:
+          $ref: '#/components/schemas/GameConfig'
+        copy:
+          $ref: '#/components/schemas/Copy'
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          default: America/Argentina/Buenos_Aires
+        stats:
+          $ref: '#/components/schemas/EventStats'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ItemSchemaField:
+      type: object
+      required: [key, label]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+          enum: [text, number, url]
+          default: text
+        showInCard:
+          type: boolean
+          default: false
+        showInWin:
+          type: boolean
+          default: false
+
+    ItemSchema:
+      type: object
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemSchemaField'
+
+    Collection:
+      type: object
+      properties:
+        _id:
+          type: string
+        eventId:
+          type: string
+        organizationId:
+          type: string
+        name:
+          type: string
+          minLength: 2
+        description:
+          type: string
+        imageURL:
+          type: string
+          format: uri
+        order:
+          type: integer
+          default: 0
+        isActive:
+          type: boolean
+          default: true
+        itemSchema:
+          $ref: '#/components/schemas/ItemSchema'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Item:
+      type: object
+      properties:
+        _id:
+          type: string
+        collectionId:
+          type: string
+        eventId:
+          type: string
+        organizationId:
+          type: string
+        name:
+          type: string
+        imageURL:
+          type: string
+          format: uri
+        weight:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+          description: Peso para selección aleatoria ponderada
+        isActive:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ItemSnapshot:
+      type: object
+      properties:
+        name:
+          type: string
+        imageURL:
+          type: string
+          format: uri
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Redemption:
+      type: object
+      properties:
+        _id:
+          type: string
+        code:
+          type: string
+          example: WIN-ABC12345
+        qrDataURL:
+          type: string
+          description: Data URI PNG 256x256 del código QR
+        status:
+          type: string
+          enum: [pending, redeemed, expired]
+        itemSnapshot:
+          $ref: '#/components/schemas/ItemSnapshot'
+        timeRemainingMs:
+          type: integer
+          description: Milisegundos restantes. 0 si no está pendiente
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        redeemedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        pages:
+          type: integer
+
+paths:
+
+  # ─── AUTH ────────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Iniciar sesión
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Login exitoso
+          headers:
+            Set-Cookie:
+              description: refresh_token httpOnly cookie (7 días)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accessToken:
+                        type: string
+                        description: JWT (15 min)
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          email:
+                            type: string
+                          role:
+                            type: string
+                            enum: [org_admin, super_admin, operator]
+        '401':
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Invalid credentials
+        '403':
+          description: Cuenta no verificada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Demasiadas solicitudes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Registrar nueva cuenta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                organizationName:
+                  type: string
+                  minLength: 2
+      responses:
+        '201':
+          description: Registro exitoso. Se envía email de verificación
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Check your email to verify your account.
+        '400':
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Email ya registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Demasiadas solicitudes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/verify:
+    get:
+      tags: [Auth]
+      summary: Verificar email
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: JWT recibido por email
+      responses:
+        '302':
+          description: Redirección a /admin/login?verified=1
+        '500':
+          description: Token inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renovar access token
+      description: Usa el cookie `refresh_token` httpOnly para emitir un nuevo access token y rotar el refresh token.
+      responses:
+        '200':
+          description: Nuevo access token emitido
+          headers:
+            Set-Cookie:
+              description: Nuevo refresh_token cookie rotado
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accessToken:
+                        type: string
+        '401':
+          description: Refresh token ausente, expirado o revocado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Cerrar sesión
+      description: Revoca el refresh token y elimina el cookie.
+      responses:
+        '200':
+          description: Sesión cerrada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Logged out
+
+  # ─── EVENTS ──────────────────────────────────────────────────────────────────
+
+  /events:
+    get:
+      tags: [Events]
+      summary: Listar eventos de la organización
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: x-org-id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de eventos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+        '401':
+          description: No autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags: [Events]
+      summary: Crear evento
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Event'
+              required: [slug, name, startsAt, endsAt]
+      responses:
+        '201':
+          description: Evento creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Event'
+        '400':
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Slug ya existe en la organización
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: ObjectId o slug del evento
+
+    get:
+      tags: [Events]
+      summary: Obtener evento con sus colecciones
+      description: Endpoint público. Puede recibir el slug o el ObjectId del evento.
+      responses:
+        '200':
+          description: Evento y colecciones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      event:
+                        $ref: '#/components/schemas/Event'
+                      collections:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Collection'
+        '404':
+          description: Evento no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    patch:
+      tags: [Events]
+      summary: Actualizar evento
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                status:
+                  type: string
+                  enum: [draft, active, paused, ended]
+                startsAt:
+                  type: string
+                  format: date-time
+                endsAt:
+                  type: string
+                  format: date-time
+                timezone:
+                  type: string
+                theme:
+                  $ref: '#/components/schemas/Theme'
+                gameConfig:
+                  $ref: '#/components/schemas/GameConfig'
+                copy:
+                  $ref: '#/components/schemas/Copy'
+      responses:
+        '200':
+          description: Evento actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Event'
+        '404':
+          description: Evento no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [Events]
+      summary: Eliminar evento
+      description: Solo se pueden eliminar eventos en estado `draft`.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Evento eliminado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Event deleted
+        '400':
+          description: Solo se pueden eliminar eventos en draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Evento no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─── SPINS ───────────────────────────────────────────────────────────────────
+
+  /events/{eventId}/spins:
+    post:
+      tags: [Spins]
+      summary: Ejecutar un spin
+      description: |
+        Endpoint público con rate limit de 60 req/min por IP.
+
+        El ganador se determina cuando `spinNumber % winnerInterval === 0`.
+        La selección del ítem ganador es aleatoria ponderada por el campo `weight`.
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: string
+                  format: uuid
+                  description: UUID de sesión del jugador
+                playerData:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Datos del jugador según gameConfig.playerDataFields
+      responses:
+        '200':
+          description: Resultado del spin
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      isWinner:
+                        type: boolean
+                      spinNumber:
+                        type: integer
+                        description: Contador del spin en esta sesión (base 1)
+                      spinsUntilWin:
+                        type: integer
+                      redemption:
+                        nullable: true
+                        description: Solo presente si isWinner es true
+                        type: object
+                        properties:
+                          code:
+                            type: string
+                            example: WIN-ABCD1234
+                          qrDataURL:
+                            type: string
+                            description: Data URI PNG del QR
+                          item:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              imageURL:
+                                type: string
+                                format: uri
+                              metadata:
+                                type: object
+                                additionalProperties: true
+                      copy:
+                        type: object
+                        properties:
+                          winMessage:
+                            type: string
+                          loseMessage:
+                            type: string
+        '400':
+          description: Validación o datos de jugador faltantes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Evento inactivo o máximo de spins alcanzado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Evento no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit excedido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─── STATS ───────────────────────────────────────────────────────────────────
+
+  /events/{eventId}/stats:
+    get:
+      tags: [Stats]
+      summary: Estadísticas del evento
+      description: |
+        Soporta dos modos:
+        - **JSON** (default): Snapshot de estadísticas actuales.
+        - **SSE** (`Accept: text/event-stream`): Stream en tiempo real con actualizaciones cada 5 segundos.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Accept
+          in: header
+          schema:
+            type: string
+            enum: [application/json, text/event-stream]
+      responses:
+        '200':
+          description: Estadísticas del evento (JSON o SSE)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      event:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                          status:
+                            type: string
+                          slug:
+                            type: string
+                      kpis:
+                        type: object
+                        properties:
+                          totalSpins:
+                            type: integer
+                          totalWinners:
+                            type: integer
+                          pending:
+                            type: integer
+                          redeemed:
+                            type: integer
+                          expired:
+                            type: integer
+                          totalItems:
+                            type: integer
+                          totalCollections:
+                            type: integer
+                          spinsLast24h:
+                            type: integer
+                      lastWinners:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            itemSnapshot:
+                              $ref: '#/components/schemas/ItemSnapshot'
+                            redeemedAt:
+                              type: string
+                              format: date-time
+                      itemsDistribution:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            count:
+                              type: integer
+                      winRate:
+                        type: string
+                        example: '20.0'
+                        description: Porcentaje de spins ganadores
+            text/event-stream:
+              schema:
+                type: string
+                description: Stream SSE con eventos JSON del mismo esquema cada 5 segundos
+
+  # ─── COLLECTIONS ─────────────────────────────────────────────────────────────
+
+  /events/{eventId}/collections:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [Collections]
+      summary: Listar colecciones del evento
+      description: Endpoint público.
+      responses:
+        '200':
+          description: Lista de colecciones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Collection'
+
+    post:
+      tags: [Collections]
+      summary: Crear colección
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 2
+                description:
+                  type: string
+                imageURL:
+                  type: string
+                  format: uri
+                order:
+                  type: integer
+                  default: 0
+                itemSchema:
+                  $ref: '#/components/schemas/ItemSchema'
+      responses:
+        '201':
+          description: Colección creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Collection'
+        '400':
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}/collections/{collectionId}:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: collectionId
+        in: path
+        required: true
+        schema:
+          type: string
+
+    patch:
+      tags: [Collections]
+      summary: Actualizar colección
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                imageURL:
+                  type: string
+                  format: uri
+                order:
+                  type: integer
+                isActive:
+                  type: boolean
+                itemSchema:
+                  $ref: '#/components/schemas/ItemSchema'
+      responses:
+        '200':
+          description: Colección actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Collection'
+        '404':
+          description: Colección no encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [Collections]
+      summary: Eliminar colección
+      description: La colección debe estar vacía (sin ítems) para poder eliminarla.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Colección eliminada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Deleted
+        '400':
+          description: La colección tiene ítems
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Colección no encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─── ITEMS ───────────────────────────────────────────────────────────────────
+
+  /events/{eventId}/items:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema:
+          type: string
+
+    get:
+      tags: [Items]
+      summary: Listar ítems del evento
+      description: Endpoint público. Opcionalmente filtrar por colección.
+      parameters:
+        - name: collectionId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de ítems
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Item'
+
+    post:
+      tags: [Items]
+      summary: Crear ítem
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [collectionId, name, imageURL, weight]
+              properties:
+                collectionId:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                imageURL:
+                  type: string
+                  format: uri
+                weight:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 50
+                metadata:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+      responses:
+        '201':
+          description: Ítem creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Item'
+        '400':
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}/items/bulk:
+    post:
+      tags: [Items]
+      summary: Importar ítems desde CSV
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, collectionId]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Archivo CSV
+                collectionId:
+                  type: string
+            encoding:
+              file:
+                contentType: text/csv
+      description: |
+        Columnas CSV:
+        - `nombre` o `name` (requerido)
+        - `imageurl` o `image_url` (requerido)
+        - `peso` o `weight` (opcional, default 50)
+        - Columnas adicionales mapeadas al itemSchema de la colección
+      responses:
+        '201':
+          description: Importación completada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      inserted:
+                        type: integer
+                      total:
+                        type: integer
+        '400':
+          description: Archivo faltante, tipo inválido o error de parsing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}/items/{itemId}:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+
+    patch:
+      tags: [Items]
+      summary: Actualizar ítem
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                imageURL:
+                  type: string
+                  format: uri
+                weight:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                isActive:
+                  type: boolean
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Ítem actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Item'
+        '404':
+          description: Ítem no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [Items]
+      summary: Eliminar ítem
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Ítem eliminado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Deleted
+        '404':
+          description: Ítem no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─── REDEMPTIONS ─────────────────────────────────────────────────────────────
+
+  /events/{eventId}/redemptions:
+    get:
+      tags: [Redemptions]
+      summary: Listar canjes del evento
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, redeemed, expired]
+      responses:
+        '200':
+          description: Lista paginada de canjes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      redemptions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Redemption'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+
+  /events/{eventId}/redemptions/export:
+    get:
+      tags: [Redemptions]
+      summary: Exportar canjes a CSV
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archivo CSV con todos los canjes
+          content:
+            text/csv:
+              schema:
+                type: string
+              example: "code,item,metadata,status,createdAt,redeemedAt,expiresAt\nWIN-ABC12345,Premio,{},redeemed,2024-01-01T12:00:00Z,2024-01-02T12:00:00Z,2024-01-03T12:00:00Z"
+        '401':
+          description: No autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}/redemptions/{code}:
+    get:
+      tags: [Redemptions]
+      summary: Consultar canje por código
+      description: Endpoint público. Usado para mostrar el estado del premio al ganador.
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: WIN-ABCD1234
+      responses:
+        '200':
+          description: Datos del canje
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Redemption'
+        '404':
+          description: Código no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/{eventId}/redemptions/{code}/redeem:
+    patch:
+      tags: [Redemptions]
+      summary: Marcar código como canjeado
+      description: Usado por operadores para validar premios físicamente.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: x-user-id
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: x-org-id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Canje confirmado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                      code:
+                        type: string
+                      status:
+                        type: string
+                        example: redeemed
+                      redeemedAt:
+                        type: string
+                        format: date-time
+                      redeemedBy:
+                        type: string
+                        description: userId del operador
+        '404':
+          description: Código no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Código ya canjeado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Código expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─── UPLOADS ─────────────────────────────────────────────────────────────────
+
+  /uploads/image:
+    post:
+      tags: [Uploads]
+      summary: Subir imagen a Cloudinary
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Imagen (jpeg, png, webp, gif, svg). Máximo 5MB.
+                folder:
+                  type: string
+                  default: eventspin
+                  description: Carpeta destino en Cloudinary
+      responses:
+        '200':
+          description: URL de la imagen subida
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                        format: uri
+                        description: URL pública en Cloudinary CDN
+        '400':
+          description: Archivo faltante, tipo no soportado o tamaño excedido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
